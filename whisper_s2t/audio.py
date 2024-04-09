@@ -1,7 +1,6 @@
 import os
 import wave
 import tempfile
-import subprocess
 import numpy as np
 
 import torch
@@ -9,61 +8,52 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from multiprocessing.dummy import Pool
+import ffmpeg
 
 from . import BASE_PATH
 from .configs import *
+
 
 silent_file = f"{BASE_PATH}/assets/silent.mp3"
 
 RESAMPLING_ENGINE = 'soxr'
 with tempfile.TemporaryDirectory() as tmpdir:
-    ffmpeg_install_link = "https://github.com/shashikg/WhisperS2T?tab=readme-ov-file#for-ubuntu"
-    
-    try: 
-        subprocess.check_output(['ffmpeg', '-version'])
-    except:
-        raise RuntimeError(f"Seems 'ffmpeg' is not installed. Please install ffmpeg before using this package!\nCheck: {ffmpeg_install_link}")
-
-    ret_code = os.system(f'ffmpeg -hide_banner -loglevel panic -i "{silent_file}" -threads 1 -acodec pcm_s16le -ac 1 -af aresample=resampler={RESAMPLING_ENGINE} -ar 1600 "{tmpdir}/tmp.wav" -y')
-
+    ret_code = os.system(f'ffmpeg -version')
     if ret_code != 0:
-        print(f"'ffmpeg' failed with soxr resampler, trying 'swr' resampler.")
-        RESAMPLING_ENGINE = 'swr'
-
-        ret_code = os.system(f'ffmpeg -hide_banner -loglevel panic -i "{silent_file}" -threads 1 -acodec pcm_s16le -ac 1 -af aresample=resampler={RESAMPLING_ENGINE} -ar 1600 "{tmpdir}/tmp.wav" -y')
+        print(f"Seems 'ffmpeg' is not installed. Please install ffmpeg before using this package!")
+    else:
+        ret_code = os.system(f'ffmpeg -hide_banner -loglevel panic -i {silent_file} -threads 1 -acodec pcm_s16le -ac 1 -af aresample=resampler={RESAMPLING_ENGINE} -ar 1600 {tmpdir}/tmp.wav -y')
 
         if ret_code != 0:
-            raise RuntimeError(f"Seems 'ffmpeg' is not installed properly. Please uninstall and install it again.\nCheck: {ffmpeg_install_link}")
-        else:
-            print(f"Using 'swr' resampler. This may degrade performance.")
-        
+            print(f"'ffmpeg' is not built with soxr resampler, using 'swr' resampler. This may degrade performance.")
+            RESAMPLING_ENGINE = 'swr'
 
-def load_audio(input_file, sr=16000, return_duration=False):
-    
+def load_audio(file_bytes: bytes, sr: int = 16_000) -> np.ndarray:
+    """
+    Use file's bytes and transform to mono waveform, resampling as necessary
+    Parameters
+    ----------
+    file: bytes
+        The bytes of the audio file
+    sr: int
+        The sample rate to resample the audio if necessary
+    Returns
+    -------
+    A NumPy array containing the audio waveform, in float32 dtype.
+    """
     try:
-        with wave.open(input_file, 'rb') as wf:
-            if (wf.getframerate() != sr) or (wf.getnchannels() != 1):
-                raise Exception("Not a 16kHz wav mono channel file!")
-                
-            frames = wf.getnframes()
-            x = wf.readframes(int(frames))
-    except:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            wav_file = f"{tmpdir}/tmp.wav"
-            ret_code = os.system(f'ffmpeg -hide_banner -loglevel panic -i "{input_file}" -threads 1 -acodec pcm_s16le -ac 1 -af aresample=resampler={RESAMPLING_ENGINE} -ar {sr} "{wav_file}" -y')
-            if ret_code != 0: raise RuntimeError("ffmpeg failed to resample the input audio file, make sure ffmpeg is compiled properly!")
-        
-            with wave.open(wav_file, 'rb') as wf:
-                frames = wf.getnframes()
-                x = wf.readframes(int(frames))
-    
-    audio_signal = np.frombuffer(x, np.int16).flatten().astype(np.float32)/32768.0
-    audio_duration = len(audio_signal)/sr
-    
-    if return_duration:
-        return audio_signal, audio_duration
-    else:
-        return audio_signal
+        # This launches a subprocess to decode audio while down-mixing and resampling as necessary.
+        # Requires the ffmpeg CLI and `ffmpeg-python` package to be installed.
+        out, _ = (
+            ffmpeg.input('pipe:', threads=0)
+            .output("pipe:", format="s16le", acodec="pcm_s16le", ac=1, ar=sr)
+            .run_async(pipe_stdin=True, pipe_stdout=True)
+        ).communicate(input=file_bytes)
+
+    except ffmpeg.Error as e:
+        raise RuntimeError(f"Failed to load audio: {e.stderr.decode()}") from e
+
+    return np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0
 
 
 THREAD_POOL_AUDIO_LOADER = Pool(2)
