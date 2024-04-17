@@ -6,10 +6,16 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import subprocess
 
 from multiprocessing.dummy import Pool
-import ffmpeg
 
+try:
+    import ffmpeg
+
+    ffmpeg_available = True
+except ImportError:
+    ffmpeg_available = False
 from . import BASE_PATH
 from .configs import *
 
@@ -28,7 +34,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
             print(f"'ffmpeg' is not built with soxr resampler, using 'swr' resampler. This may degrade performance.")
             RESAMPLING_ENGINE = 'swr'
 
-def load_audio(file_bytes: bytes, sr: int = 16_000) -> np.ndarray:
+'''def load_audio(file_bytes: bytes, sr: int = 16_000) -> np.ndarray:
     """
     Use file's bytes and transform to mono waveform, resampling as necessary
     Parameters
@@ -53,7 +59,72 @@ def load_audio(file_bytes: bytes, sr: int = 16_000) -> np.ndarray:
     except ffmpeg.Error as e:
         raise RuntimeError(f"Failed to load audio: {e.stderr.decode()}") from e
 
-    return np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0
+    return np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0'''
+
+
+
+
+def load_audio(input, sr=16000, return_duration=False):
+    """
+    Load an audio file given a file path or file bytes, resampling to 16kHz mono if necessary.
+
+    Parameters
+    ----------
+    input : str or bytes
+        The file path to the audio file or bytes of the audio file.
+    sr : int, optional
+        The sample rate to resample the audio to (default is 16000).
+    return_duration : bool, optional
+        Whether to return the duration of the audio along with the waveform (default is False).
+
+    Returns
+    -------
+    np.ndarray
+        The audio waveform as a NumPy array in float32 data type.
+    tuple (np.ndarray, float)
+        The audio waveform and its duration in seconds, if return_duration is True.
+    """
+    if isinstance(input, str):  # Input is a file path
+        try:
+            with wave.open(input, 'rb') as wf:
+                if (wf.getframerate() != sr) or (wf.getnchannels() != 1):
+                    raise Exception("Not a 16kHz mono wav file, will resample.")
+                frames = wf.getnframes()
+                x = wf.readframes(frames)
+        except:
+            if not ffmpeg_available:
+                raise RuntimeError("ffmpeg is required for resampling.")
+            with tempfile.TemporaryDirectory() as tmpdir:
+                wav_file = f"{tmpdir}/tmp.wav"
+                subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'panic',
+                                '-i', input, '-threads', '1', '-acodec', 'pcm_s16le',
+                                '-ac', '1', '-ar', str(sr), wav_file, '-y'],
+                               check=True)
+                with wave.open(wav_file, 'rb') as wf:
+                    frames = wf.getnframes()
+                    x = wf.readframes(frames)
+
+    elif isinstance(input, bytes):  # Input is bytes
+        if not ffmpeg_available:
+            raise RuntimeError("ffmpeg is required for processing bytes input.")
+        out, _ = (
+            ffmpeg
+            .input('pipe:', format='wav')
+            .output('pipe:', format='s16le', acodec='pcm_s16le', ac=1, ar=sr)
+            .run(input=input, capture_stdout=True, capture_stderr=True)
+        )
+        x = out
+
+    else:
+        raise ValueError("Unsupported input type. Input must be a file path or bytes.")
+
+    audio_signal = np.frombuffer(x, np.int16).astype(np.float32) / 32768.0
+    audio_duration = len(audio_signal) / sr
+
+    if return_duration:
+        return audio_signal, audio_duration
+    else:
+        return audio_signal
 
 
 THREAD_POOL_AUDIO_LOADER = Pool(2)
