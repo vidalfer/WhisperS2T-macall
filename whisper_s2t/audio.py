@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
 
 
-def load_audio(input, sr=16000, return_duration=False):
+'''def load_audio(input, sr=16000, return_duration=False):
     """
     Load an audio file given a file path or file bytes, resampling to 16kHz mono if necessary.
 
@@ -118,6 +118,70 @@ def load_audio(input, sr=16000, return_duration=False):
     else:
         raise ValueError("Unsupported input type. Input must be a file path or bytes.")
 
+    audio_signal = np.frombuffer(x, np.int16).astype(np.float32) / 32768.0
+    audio_duration = len(audio_signal) / sr
+
+    if return_duration:
+        return audio_signal, audio_duration
+    else:
+        return audio_signal'''
+
+
+def load_audio(input, sr=16000, return_duration=False):
+    """
+    Load an audio file given a file path or file bytes, resampling to 16kHz mono if necessary.
+    Supports WAV, MP3, and Opus formats.
+
+    Parameters
+    ----------
+    input : str or bytes
+        The file path to the audio file or bytes of the audio file.
+    sr : int, optional
+        The sample rate to resample the audio to (default is 16000).
+    return_duration : bool, optional
+        Whether to return the duration of the audio along with the waveform (default is False).
+
+    Returns
+    -------
+    np.ndarray
+        The audio waveform as a NumPy array in float32 data type.
+    tuple (np.ndarray, float)
+        The audio waveform and its duration in seconds, if return_duration is True.
+    """
+    # Determine if input is a file path or bytes
+    if isinstance(input, str):  # Input is a file path
+        input_type = 'file'
+    elif isinstance(input, bytes):  # Input is bytes
+        input_type = 'bytes'
+    else:
+        raise ValueError("Unsupported input type. Input must be a file path or bytes.")
+
+    # Use ffmpeg to convert the audio file or bytes to the desired format and sample rate
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Define the temporary WAV file path
+        wav_file = f"{tmpdir}/output.wav"
+
+        if input_type == 'file':
+            # Construct ffmpeg command for file input
+            command = ['ffmpeg', '-hide_banner', '-loglevel', 'panic',
+                       '-i', input, '-ar', str(sr), '-ac', '1', '-f', 'wav', wav_file]
+        else:
+            # Construct ffmpeg command for bytes input
+            command = ['ffmpeg', '-hide_banner', '-loglevel', 'panic',
+                       '-i', 'pipe:0', '-ar', str(sr), '-ac', '1', '-f', 'wav', 'pipe:1']
+
+        if input_type == 'file':
+            # Run ffmpeg for file input
+            subprocess.run(command, check=True)
+        else:
+            # Run ffmpeg for bytes input
+            subprocess.run(command, input=input, check=True, stdout=open(wav_file, 'wb'))
+
+        # Read the processed WAV file
+        with open(wav_file, 'rb') as f:
+            x = f.read()
+
+    # Convert bytes to float32 numpy array
     audio_signal = np.frombuffer(x, np.int16).astype(np.float32) / 32768.0
     audio_duration = len(audio_signal) / sr
 
